@@ -8,15 +8,15 @@ from autogen.cache import Cache
 from functools import partial
 
 
-config_list_gpt4 = autogen.config_list_from_json(
+config_list_gpt62 = autogen.config_list_from_json(
     "OAI_CONFIG_LIST",
     filter_dict={
-        "model": ["gpt-4-0125-preview"],
+        "model": ["gpt-6.2-sol"],
     },
 )
 
 llm_config = {
-    "config_list": config_list_gpt4,
+    "config_list": config_list_gpt62,
     "cache_seed": 42,
     "temperature": 0,
 }

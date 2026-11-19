@@ -136,6 +136,38 @@ def _annual_reports(df: pd.DataFrame) -> pd.DataFrame:
     return out.sort_values("_date").drop_duplicates("_date")
 
 
+def _select_annual_report(df: pd.DataFrame, report_year: str | None = None) -> pd.Series | None:
+    """Select a formal annual-report announcement by report year, not filing year."""
+    if df is None or df.empty:
+        return None
+    title_col = next((name for name in ("公告标题", "title", "TITLE") if name in df.columns), None)
+    if title_col is None:
+        return None
+    candidates = df.copy()
+    titles = candidates[title_col].astype(str)
+    candidates = candidates[titles.str.contains("年度报告", na=False)]
+    if report_year is not None:
+        candidates = candidates[
+            candidates[title_col].astype(str).str.contains(
+                rf"(?<!\d){re.escape(str(report_year))}年年度报告", regex=True, na=False
+            )
+        ]
+    if candidates.empty:
+        return None
+
+    # Prefer the formal report over an abstract, English edition, correction,
+    # or cancellation notice when the endpoint returns several related rows.
+    def score(title: str) -> tuple[int, str]:
+        text = str(title)
+        penalty = sum(token in text for token in ("摘要", "英文版", "取消", "更正"))
+        return (-penalty, text)
+
+    row = candidates.assign(_score=candidates[title_col].map(score)).sort_values(
+        ["_score"], ascending=False
+    ).iloc[0]
+    return row.drop(labels=["_score"], errors="ignore")
+
+
 def _num_col(df: pd.DataFrame, name: str) -> pd.Series:
     if name in df.columns:
         return pd.to_numeric(df[name], errors="coerce")
@@ -214,7 +246,7 @@ class AkShareUtils:
                     start_date=start,
                     end_date=end,
                     adjust=adjust,
-                )
+                ).rename(columns={"open": "Open", "close": "Close", "high": "High", "low": "Low"})
             )
             # 腾讯接口的 volume 单位是股，东财是手，统一折算成手方便对比
             if "volume" in df.columns:
@@ -235,17 +267,37 @@ class AkShareUtils:
         end_date: Annotated[str, "结束日期，YYYY-mm-dd"],
         save_path: SavePathType = None,
     ) -> pd.DataFrame:
-        """指数日线行情（东财），列名与 ``get_stock_data`` 一致。"""
+        """指数日线行情（东财失败时回退腾讯），列名与 ``get_stock_data`` 一致。"""
         ak = _require_ak()
         code = _normalize_symbol(index_symbol)
-        df = _standardize_price(
-            ak.index_zh_a_hist(
-                symbol=code,
-                period="daily",
-                start_date=_date8(start_date),
-                end_date=_date8(end_date),
+        df = pd.DataFrame()
+        try:
+            df = _standardize_price(
+                ak.index_zh_a_hist(
+                    symbol=code,
+                    period="daily",
+                    start_date=_date8(start_date),
+                    end_date=_date8(end_date),
+                )
             )
-        )
+        except Exception as exc:
+            print(f"[AkShareUtils] 东方财富指数行情获取失败（{exc}），回退到腾讯行情。")
+
+        if df.empty:
+            prefix = "sz" if code.startswith("399") else "sh"
+            tx = ak.stock_zh_index_daily_tx(symbol=f"{prefix}{code}")
+            if tx is None or tx.empty:
+                return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume", "Amount"])
+            tx = tx.rename(
+                columns={"date": "Date", "open": "Open", "high": "High", "low": "Low", "close": "Close",
+                         "amount": "Amount", "volume": "Volume"}
+            )
+            tx["Date"] = pd.to_datetime(tx["Date"], errors="coerce")
+            tx = tx.dropna(subset=["Date"]).set_index("Date").sort_index()
+            df = tx.loc[
+                (tx.index >= pd.to_datetime(start_date))
+                & (tx.index <= pd.to_datetime(end_date))
+            ]
         save_output(df, f"Index data for {code}", save_path)
         return df
 
@@ -259,8 +311,13 @@ class AkShareUtils:
         """
         ak = _require_ak()
         code = _normalize_symbol(symbol)
-        df = ak.stock_individual_info_em(symbol=code)
-        info = dict(zip(df["item"], df["value"]))
+        try:
+            df = ak.stock_individual_info_em(symbol=code)
+            info = dict(zip(df["item"], df["value"]))
+        except Exception:
+            # Company name is presentation metadata. Do not make charts and
+            # reports fail when the optional Eastmoney endpoint is unavailable.
+            info = {}
         info.setdefault("symbol", code)
         info.setdefault("shortName", info.get("股票简称", code))
         info.setdefault("longName", info.get("股票简称", code))
@@ -390,6 +447,7 @@ class AkShareUtils:
     def get_financial_metrics(
         ticker_symbol: Annotated[str, "6 位 A 股代码，如 600519"],
         years: Annotated[int, "回溯年数，默认 4"] = 4,
+        as_of: Annotated[Optional[str], "可选数据截止日 YYYY-mm-dd，排除其后报告期"] = None,
     ) -> pd.DataFrame:
         """按年度汇总核心财务指标（营收、利润、ROE、ROA、负债率、现金流等）。
 
@@ -405,16 +463,17 @@ class AkShareUtils:
         if inc.empty:
             raise ValueError(f"未获取到 {ticker_symbol} 的年报数据")
 
-        merged = inc[
-            [
-                "_date",
-                "TOTAL_OPERATE_INCOME",
-                "OPERATE_COST",
-                "PARENT_NETPROFIT",
-                "NETPROFIT",
-                "BASIC_EPS",
-            ]
-        ].merge(
+        income_cols = [
+            "_date",
+            "TOTAL_OPERATE_INCOME",
+            "OPERATE_COST",
+            "PARENT_NETPROFIT",
+            "NETPROFIT",
+            "BASIC_EPS",
+        ]
+        if "OPERATE_INCOME" in inc.columns:
+            income_cols.insert(1, "OPERATE_INCOME")
+        merged = inc[income_cols].merge(
             bal[["_date", "TOTAL_ASSETS", "TOTAL_LIABILITIES", "TOTAL_EQUITY"]],
             on="_date",
             how="left",
@@ -424,8 +483,18 @@ class AkShareUtils:
             how="left",
         )
         merged = merged.sort_values("_date").reset_index(drop=True)
+        if as_of:
+            merged = merged[merged["_date"] <= pd.to_datetime(as_of)]
+        if merged.empty:
+            raise ValueError(f"{ticker_symbol} 在 {as_of} 前没有可用年度财务数据")
 
-        revenue = _num_col(merged, "TOTAL_OPERATE_INCOME")
+        operating_revenue = _num_col(merged, "OPERATE_INCOME")
+        total_operating_income = _num_col(merged, "TOTAL_OPERATE_INCOME")
+        # Some historical AkShare responses omit OPERATE_INCOME. Keep the
+        # output usable, while retaining both explicit source metrics.
+        if operating_revenue.isna().all():
+            operating_revenue = total_operating_income.copy()
+        revenue = operating_revenue
         cost = _num_col(merged, "OPERATE_COST")
         net_profit = _num_col(merged, "PARENT_NETPROFIT").fillna(
             _num_col(merged, "NETPROFIT")
@@ -441,8 +510,9 @@ class AkShareUtils:
         fcf = ocf - capex
 
         metrics = {
-            "Revenue (亿元)": (revenue / 1e8).round(2),
-            "Revenue Growth (%)": (revenue.pct_change() * 100).round(1),
+            "Operating Revenue (亿元)": (revenue / 1e8).round(2),
+            "Operating Revenue Growth (%)": (revenue.pct_change() * 100).round(1),
+            "Total Operating Income (亿元)": (total_operating_income / 1e8).round(2),
             "Gross Profit (亿元)": ((revenue - cost) / 1e8).round(2),
             "Gross Margin (%)": ((revenue - cost) / revenue * 100).round(1),
             "Net Profit (亿元)": (net_profit / 1e8).round(2),
@@ -466,6 +536,7 @@ class AkShareUtils:
         ticker_symbol: Annotated[str, "6 位 A 股代码，如 600519"],
         competitors: Annotated[List[str], "可比公司代码列表，如 ['000858', '000568']"],
         years: Annotated[int, "回溯年数，默认 4"] = 4,
+        as_of: Annotated[Optional[str], "可选数据截止日 YYYY-mm-dd"] = None,
     ) -> dict:
         """返回公司及可比公司的核心财务指标字典。"""
         symbols = [_normalize_symbol(ticker_symbol)] + [
@@ -474,7 +545,7 @@ class AkShareUtils:
         result = {}
         for sym in symbols:
             try:
-                result[sym] = AkShareUtils.get_financial_metrics(sym, years)
+                result[sym] = AkShareUtils.get_financial_metrics(sym, years, as_of=as_of)
             except Exception as exc:
                 print(f"[AkShareUtils] {sym} 财务指标获取失败: {exc}")
                 result[sym] = None
@@ -733,29 +804,40 @@ class AkShareUtils:
         """返回年报公告链接和披露日期（对应 FMPUtils.get_sec_report）。"""
         code = _normalize_symbol(ticker_symbol)
         if fyear == "latest":
-            start_date = f"{max(datetime.now().year - 3, 1990)}-01-01"
+            report_year = None
+            start_date = f"{max(datetime.now().year - 5, 1990)}-01-01"
             end_date = datetime.now().strftime("%Y-%m-%d")
         else:
-            start_date = f"{fyear}-01-01"
-            end_date = f"{fyear}-12-31"
+            try:
+                report_year = str(int(fyear))
+            except (TypeError, ValueError):
+                raise ValueError("fyear must be 'latest' or a four-digit report year")
+            # Annual reports are normally filed in the following calendar year.
+            # Include a wider window because filing deadlines vary by issuer.
+            start_date = f"{int(report_year)}-01-01"
+            end_date = f"{int(report_year) + 2}-12-31"
 
         df = AkShareUtils.get_announcements(
             code, start_date=start_date, end_date=end_date, category="年报"
         )
-        if df is None or df.empty:
+        row = _select_annual_report(df, report_year)
+        if row is None and fyear == "latest":
+            # For latest, choose the newest formal report by filing date.
+            title_col = next((name for name in ("公告标题", "title", "TITLE") if name in df.columns), None)
+            date_col = "公告时间" if "公告时间" in df.columns else None
+            if title_col and date_col and not df.empty:
+                formal = df[df[title_col].astype(str).str.contains("年度报告", na=False)].copy()
+                if not formal.empty:
+                    formal["_date"] = pd.to_datetime(formal[date_col], errors="coerce")
+                    row = formal.sort_values("_date").iloc[-1]
+        if row is None:
             return f"未找到 {code} {fyear} 的年报公告"
 
-        if fyear != "latest":
-            sub = df[
-                df["公告时间"].astype(str).str.startswith(str(fyear))
-            ]
-            if sub.empty:
-                return f"未找到 {code} {fyear} 的年报公告"
-            row = sub.iloc[0]
-        else:
-            row = df.iloc[0]
-
-        return f"Link: {row['公告链接']}\nFiling Date: {row['公告时间']}"
+        return (
+            f"Report Title: {row.get('公告标题', row.get('title', ''))}\n"
+            f"Link: {row.get('公告链接', row.get('url', ''))}\n"
+            f"Filing Date: {row.get('公告时间', '')}"
+        )
 
     def get_company_news(
         symbol: Annotated[str, "6 位 A 股代码，如 600519"],
@@ -764,7 +846,12 @@ class AkShareUtils:
         max_news_num: Annotated[int, "最多返回条数，默认 10"] = 10,
         save_path: SavePathType = None,
     ) -> pd.DataFrame:
-        """个股新闻（东方财富），返回 date/headline/summary/source/url。"""
+        """个股新闻（东方财富），返回 date/headline/summary/source/url。
+
+        东方财富接口通常只返回有限的近期快讯，并不是可任意回溯的历史新闻库。
+        请求较早日期时返回空表只能表示当前接口没有覆盖到该窗口，不能据此断言
+        当时没有新闻；调用方不得把近期新闻改写成历史事件证据。
+        """
         ak = _require_ak()
         code = _normalize_symbol(symbol)
         raw = ak.stock_news_em(symbol=code)

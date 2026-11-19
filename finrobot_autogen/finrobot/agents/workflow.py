@@ -139,6 +139,8 @@ class SingleAssistant(SingleAssistantBase):
         **kwargs,
     ):
         super().__init__(agent_config, llm_config=llm_config)
+        if self.assistant.name in {"A_Share_Factor_Researcher", "A_Share_Factor_Ideator"}:
+            code_execution_config = False
         self.user_proxy = UserProxyAgent(
             name="User_Proxy",
             is_termination_msg=is_termination_msg,

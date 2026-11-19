@@ -40,6 +40,7 @@ venv/
 .venv/
 
 # Runtime files
+/finrobot_autogen/experiments/results/
 .app.pid
 finrobot_equity/logs/
 finrobot_equity/web_app/data/*.db

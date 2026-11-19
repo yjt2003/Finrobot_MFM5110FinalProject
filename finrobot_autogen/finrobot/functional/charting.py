@@ -159,13 +159,19 @@ class ReportChartUtils:
         eight_months = start_date + DateOffset(months=8)
         end_date = company_change.index.max()
 
+        company_label = (
+            info.get("shortName")
+            or info.get("longName")
+            or str(ticker_symbol)
+        )
+
         # 准备绘图
         plt.rcParams.update({"font.size": 20})  # 调整为更大的字体大小
         plt.figure(figsize=(14, 7))
         plt.plot(
             company_change.index,
             company_change,
-            label=f'{info["shortName"]} Change %',
+            label=f"{company_label} Change %",
             color="blue",
         )
         plt.plot(
@@ -177,7 +183,7 @@ class ReportChartUtils:
 
         # 设置标题和标签
         plt.title(
-            f'{info["shortName"]} vs {benchmark_label} - Change % Over the Past Year'
+            f"{company_label} vs {benchmark_label} - Change % Over the Past Year"
         )
         plt.xlabel("Date")
         plt.ylabel("Change %")
@@ -202,8 +208,13 @@ class ReportChartUtils:
             if os.path.isdir(save_path)
             else save_path
         )
+        if not plot_path:
+            raise ValueError("save_path 不能为空")
+        os.makedirs(os.path.dirname(os.path.abspath(plot_path)), exist_ok=True)
         plt.savefig(plot_path)
         plt.close()
+        if not os.path.isfile(plot_path) or os.path.getsize(plot_path) == 0:
+            raise IOError(f"股价表现图未生成: {plot_path}")
         return f"last year stock performance chart saved to <img {plot_path}>"
 
     def get_pe_eps_performance(
@@ -299,6 +310,12 @@ class ReportChartUtils:
 
             info = YFinanceUtils.get_stock_info(ticker_symbol)
 
+        company_label = (
+            info.get("shortName")
+            or info.get("longName")
+            or str(ticker_symbol)
+        )
+
         # 创建图形和轴对象
         fig, ax1 = plt.subplots(figsize=(14, 7))
         plt.rcParams.update({"font.size": 20})  # 调整为更大的字体大小
@@ -319,7 +336,7 @@ class ReportChartUtils:
         ax2.tick_params(axis="y", labelcolor=color)
 
         # 设置标题和x轴标签角度
-        plt.title(f'{info["shortName"]} PE Ratios and EPS Over the Past {years} Years')
+        plt.title(f"{company_label} PE Ratios and EPS Over the Past {years} Years")
         plt.xticks(rotation=45)
 
         # 设置x轴刻度标签
@@ -330,8 +347,13 @@ class ReportChartUtils:
         plot_path = (
             f"{save_path}/pe_performance.png" if os.path.isdir(save_path) else save_path
         )
+        if not plot_path:
+            raise ValueError("save_path 不能为空")
+        os.makedirs(os.path.dirname(os.path.abspath(plot_path)), exist_ok=True)
         plt.savefig(plot_path)
         plt.close()
+        if not os.path.isfile(plot_path) or os.path.getsize(plot_path) == 0:
+            raise IOError(f"PE/EPS 图未生成: {plot_path}")
         return f"pe performance chart saved to <img {plot_path}>"
 
 

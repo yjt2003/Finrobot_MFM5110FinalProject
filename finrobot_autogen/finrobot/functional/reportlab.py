@@ -1,5 +1,5 @@
 import os
-import traceback
+import os
 from reportlab.lib import colors
 from reportlab.lib import pagesizes
 from reportlab.platypus import (
@@ -20,6 +20,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_LEFT
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+from reportlab.pdfbase.ttfonts import TTFont
 
 from ..data_source import FMPUtils, YFinanceUtils, CNStockUtils, is_cn_symbol
 from .analyzer import ReportAnalysisUtils
@@ -64,13 +65,21 @@ class ReportLabUtils:
         risk assessment, competitors analysis and share performance, PE & EPS performance charts all into a PDF report.
         """
         try:
-            # A 股报告含中文，使用 ReportLab 内置的 CJK 字体，避免中文无法渲染。
+            # Prefer an embeddable CJK font on Windows; retain a portable fallback.
             cn = is_cn_symbol(ticker_symbol)
             body_font, bold_font = "Helvetica", "Helvetica-Bold"
             if cn:
                 try:
-                    pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
-                    body_font = bold_font = "STSong-Light"
+                    fonts_dir = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
+                    regular_path = os.path.join(fonts_dir, "msyh.ttc")
+                    bold_path = os.path.join(fonts_dir, "msyhbd.ttc")
+                    if os.path.isfile(regular_path) and os.path.isfile(bold_path):
+                        pdfmetrics.registerFont(TTFont("FinRobot-YaHei", regular_path, subfontIndex=0))
+                        pdfmetrics.registerFont(TTFont("FinRobot-YaHei-Bold", bold_path, subfontIndex=0))
+                        body_font, bold_font = "FinRobot-YaHei", "FinRobot-YaHei-Bold"
+                    else:
+                        pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
+                        body_font = bold_font = "STSong-Light"
                 except Exception:
                     pass
 
@@ -87,7 +96,10 @@ class ReportLabUtils:
                 if os.path.isdir(save_path)
                 else save_path
             )
-            os.makedirs(os.path.dirname(pdf_path), exist_ok=True)
+            os.makedirs(os.path.dirname(os.path.abspath(pdf_path)), exist_ok=True)
+            for image_path in (share_performance_image_path, pe_eps_performance_image_path):
+                if not image_path or not os.path.isfile(image_path):
+                    raise FileNotFoundError(f"报告图片不存在: {image_path!r}")
             doc = SimpleDocTemplate(pdf_path, pagesize=pagesizes.A4)
         
 
@@ -199,9 +211,10 @@ class ReportLabUtils:
             )
 
             if cn:
-                name = CNStockUtils.get_stock_info(ticker_symbol)["shortName"]
+                info = CNStockUtils.get_stock_info(ticker_symbol) or {}
             else:
-                name = YFinanceUtils.get_stock_info(ticker_symbol)["shortName"]
+                info = YFinanceUtils.get_stock_info(ticker_symbol) or {}
+            name = info.get("shortName") or info.get("longName") or str(ticker_symbol)
 
             # 准备左栏和右栏内容
             content = []
@@ -225,7 +238,16 @@ class ReportLabUtils:
 
             # content.append(Paragraph("Summarization", subtitle_style))
             if cn:
-                df = CNStockUtils.get_financial_metrics(ticker_symbol, years=5)
+                df = CNStockUtils.get_financial_metrics(
+                    ticker_symbol, years=5, as_of=str(filing_date)[:10]
+                )
+                cutoff_year = int(str(filing_date)[:4]) - 1
+                available_years = [
+                    column
+                    for column in df.columns
+                    if str(column).isdigit() and int(str(column)) <= cutoff_year
+                ]
+                df = df.loc[:, available_years]
                 df.reset_index(inplace=True)
                 df.rename(columns={"index": "FY (CNY 亿元)"}, inplace=True)
                 df = df.fillna("-")
@@ -237,7 +259,10 @@ class ReportLabUtils:
             table_data = [["Financial Metrics"]]
             table_data += [df.columns.to_list()] + df.values.tolist()
 
-            col_widths = [(left_column_width - margin * 4) / df.shape[1]] * df.shape[1]
+            table_width = left_column_width - margin * 4
+            first_col_width = min(150, table_width * 0.38)
+            year_col_width = (table_width - first_col_width) / max(df.shape[1] - 1, 1)
+            col_widths = [first_col_width] + [year_col_width] * (df.shape[1] - 1)
             table = Table(table_data, colWidths=col_widths)
             table.setStyle(table_style2)
             content.append(table)
@@ -275,6 +300,12 @@ class ReportLabUtils:
             # content.append(Paragraph("", custom_style))
             content.append(Spacer(1, 0.15 * inch))
             key_data = ReportAnalysisUtils.get_key_data(ticker_symbol, filing_date)
+            if cn:
+                key_data = {
+                    key: value
+                    for key, value in key_data.items()
+                    if key not in {"评级", "目标价（元，研报推算）"}
+                }
             # 表格数据
             data = [["Key data", ""]]
             data += [[k, v] for k, v in key_data.items()]
@@ -412,7 +443,10 @@ class ReportLabUtils:
             # 构建PDF文档
             doc.build(content)
 
-            return "Annual report generated successfully."
+            if not os.path.isfile(pdf_path) or os.path.getsize(pdf_path) == 0:
+                raise IOError(f"PDF 未生成或为空: {pdf_path}")
+            return pdf_path
 
         except Exception:
-            return traceback.format_exc()
+            # Propagate failures so tool execution is not reported as success.
+            raise

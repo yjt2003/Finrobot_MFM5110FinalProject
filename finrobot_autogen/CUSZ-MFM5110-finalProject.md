@@ -56,7 +56,7 @@
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │                         入口层                                │
-│   run_agent.py   agent_builder_demo.py   experiments/*.py    │
+│                        run_agent.py                         │
 └──────────────────────────────┬───────────────────────────────┘
                                │
 ┌──────────────────────────────▼───────────────────────────────┐
@@ -146,10 +146,8 @@
 
 | 模块 | 代码 | 说明 |
 |---|---|---|
-| 主入口 | `run_agent.py` | 交互 / 单次模式，支持 `--role`、`--provider`、`--model` |
-| 构建演示 | `agent_builder_demo.py` | 按任务动态建组 |
-| 多智能体投研组 | `experiments/investment_group.py` | CIO + 情绪/风险/基本面组配置 |
-| 多因子/组合优化 | `experiments/multi_factor_agents.py`、`portfolio_optimization.py`、`quantitative_investment_group_config.json` | 量化实验 |
+| 主入口 | `run_agent.py` | 交互 / 单次模式，默认 `auto` 自动分派，支持 `--mode single`、`--role`、`--provider`、`--model` |
+| 旧演示 | [归档目录](../archive/legacy_demos/README.md) | 独立的茅台走势预测、道琼斯多因子、拼多多目标价案例，不由主入口调用 |
 | 模块测试 | `test_module.py` | 手工验证脚本 |
 
 ### 3.6 配置与工具

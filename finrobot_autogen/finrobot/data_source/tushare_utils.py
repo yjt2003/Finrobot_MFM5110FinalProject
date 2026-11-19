@@ -160,12 +160,16 @@ class TushareUtils:
         symbol: Annotated[str, "A 股代码，如 600519"],
     ) -> Optional[dict]:
         """个股基础信息（名称、行业、地区、上市日期、交易所等）。"""
-        df = ts_pro.stock_basic(
-            ts_code=_ts_symbol(symbol),
-            fields="ts_code,symbol,name,area,industry,market,exchange,list_date,list_status",
-        )
+        code = _ts_symbol(symbol)
+        try:
+            df = ts_pro.stock_basic(
+                ts_code=code,
+                fields="ts_code,symbol,name,area,industry,market,exchange,list_date,list_status",
+            )
+        except Exception:
+            return {"symbol": code[:6], "shortName": code[:6], "longName": code[:6], "currency": "CNY"}
         if df is None or df.empty:
-            return {}
+            return {"symbol": code[:6], "shortName": code[:6], "longName": code[:6], "currency": "CNY"}
         info = df.iloc[0].to_dict()
         # 与 AkShareUtils / YFinanceUtils 的字段名对齐，方便上层工具复用。
         info.setdefault("symbol", info.get("symbol") or _ts_symbol(symbol)[:6])

@@ -30,10 +30,11 @@ from functools import update_wrapper
 from typing import Optional
 
 from .akshare_utils import AkShareUtils
+from . import baostock_utils
 from .tushare_utils import TushareUtils
 
 PROVIDER_ENV = "CN_DATA_PROVIDER"
-PROVIDER_VALUES = ("auto", "akshare", "tushare")
+PROVIDER_VALUES = ("auto", "akshare", "tushare", "baostock")
 
 # 这些接口 Tushare 能提供且已与 AkShare 的输出口径对齐。
 _TUSHARE_METHODS = frozenset(
@@ -70,7 +71,7 @@ def _provider() -> str:
         if not _invalid_provider_warned:
             print(
                 f"[CNStockUtils] 未识别的 {PROVIDER_ENV}={value!r}，"
-                "可选 auto / akshare / tushare，已按 auto 处理。"
+                "可选 auto / akshare / tushare / baostock，已按 auto 处理。"
             )
             _invalid_provider_warned = True
         return "auto"
@@ -82,6 +83,8 @@ def describe_provider() -> str:
     provider = _provider()
     has_token = bool(os.environ.get("TUSHARE_TOKEN"))
 
+    if provider == "baostock":
+        return "A股数据源：BaoStock（日线）；其他数据仍用 AkShare"
     if provider == "akshare":
         return "A股数据源：AkShare（免费）"
     if provider == "tushare":
@@ -133,6 +136,11 @@ def _call_tushare(name: str, args: tuple, kwargs: dict):
 def _dispatch(name: str, args: tuple, kwargs: dict):
     provider = _provider()
     ak_func = getattr(AkShareUtils, name)
+
+    if provider == "baostock":
+        if name == "get_stock_data":
+            return baostock_utils.get_stock_data(*args, **kwargs)
+        return ak_func(*args, **kwargs)
 
     if provider == "akshare":
         return ak_func(*args, **kwargs)
